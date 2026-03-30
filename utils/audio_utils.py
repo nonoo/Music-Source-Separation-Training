@@ -2,7 +2,6 @@
 import numpy as np
 import os
 import soundfile as sf
-import matplotlib.pyplot as plt
 from typing import Dict, Tuple, Optional
 
 import torch.distributed as dist
@@ -108,6 +107,7 @@ def draw_spectrogram(waveform: np.ndarray, sample_rate: int, length: float, outp
     """
 
     import librosa.display
+    import matplotlib.pyplot as plt
 
     # Cut only required part of spectorgram
     x = waveform[:int(length * sample_rate), :]
@@ -155,6 +155,7 @@ def draw_2_mel_spectrogram(
         None
     """
     import librosa.display
+    import matplotlib.pyplot as plt
 
     # Prepare both waveforms
     waveforms = [estimates_waveform, track_waveform]
@@ -314,6 +315,7 @@ def draw_mel_spectrogram(waveform: np.ndarray, sample_rate: int, length: float, 
     """
 
     import librosa.display
+    import matplotlib.pyplot as plt
 
     # Cut only required part of spectrogram
     x = waveform
@@ -348,6 +350,8 @@ def draw_mel_spectrogram(waveform: np.ndarray, sample_rate: int, length: float, 
 
 
 def plot_waveform_basic(waveform, samplerate, output_path=None,  theme='dark'):
+    import matplotlib.pyplot as plt
+
     data = waveform
     if len(data.shape) > 1:
         data = np.mean(data, axis=1)

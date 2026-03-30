@@ -10,19 +10,26 @@ from typing import (
     TypedDict
 )
 
-import pytorch_lightning as pl
 import torch
 import torchaudio as ta
-import torchmetrics as tm
-from asteroid import losses as asteroid_losses
-# from deepspeed.ops.adam import DeepSpeedCPUAdam
-# from geoopt import optim as gooptim
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 from torch import nn, optim
 from torch.optim import lr_scheduler
 from torch.optim.lr_scheduler import LRScheduler
 
-from models.bandit.core import loss, metrics as metrics_, model
+try:
+    import pytorch_lightning as pl
+    import torchmetrics as tm
+    from asteroid import losses as asteroid_losses
+    from pytorch_lightning.utilities.types import STEP_OUTPUT
+    _LightningModule = pl.LightningModule
+except ImportError:
+    _LightningModule = object
+
+from models.bandit.core import loss, model
+try:
+    from models.bandit.core import metrics as metrics_
+except ImportError:
+    metrics_ = None
 from models.bandit.core.data._types import BatchedDataDict
 from models.bandit.core.data.augmentation import BaseAugmentor, StemAugmentor
 from models.bandit.core.utils import audio as audio_
@@ -128,30 +135,34 @@ def parse_loss_config(config: ConfigDict) -> nn.Module:
     if name in _LEGACY_LOSS_NAMES:
         return _parse_legacy_loss_config(config)
 
-    for module in [loss, nn.modules.loss, asteroid_losses]:
+    modules = [loss, nn.modules.loss]
+    if 'asteroid_losses' in globals() and asteroid_losses is not None:
+        modules.append(asteroid_losses)
+    
+    for module in modules:
         if name in module.__dict__:
             # print(config["kwargs"])
             return module.__dict__[name](**config["kwargs"])
 
     raise NameError
 
-
-def get_metric(config: ConfigDict) -> tm.Metric:
+def get_metric(config: ConfigDict) -> Any:
     name = config["name"]
 
-    for module in [tm, metrics_]:
+    for module in [metrics_]:
         if name in module.__dict__:
             return module.__dict__[name](**config["kwargs"])
+
     raise NameError
 
 
-def parse_metric_config(config: Dict[str, ConfigDict]) -> tm.MetricCollection:
+def parse_metric_config(config: Dict[str, ConfigDict]) -> Any:
     metrics = {}
 
     for metric in config:
         metrics[metric] = get_metric(config[metric])
 
-    return tm.MetricCollection(metrics)
+    return tm.MetricCollection(metrics) if 'tm' in globals() else metrics
 
 
 def parse_fader_config(config: ConfigDict) -> BaseFader:
@@ -164,7 +175,7 @@ def parse_fader_config(config: ConfigDict) -> BaseFader:
     raise NameError
 
 
-class LightningSystem(pl.LightningModule):
+class LightningSystem(_LightningModule):
     _VOX_STEMS = ["speech", "vocals"]
     _BG_STEMS = ["background", "effects", "mne"]
 

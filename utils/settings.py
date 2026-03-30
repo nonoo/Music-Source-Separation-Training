@@ -2,7 +2,10 @@ import os
 import random
 import time
 import yaml
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 import numpy as np
 import torch
 import argparse

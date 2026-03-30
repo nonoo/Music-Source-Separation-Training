@@ -1,16 +1,22 @@
 from typing import Any, Dict
 
 import torch
-from asteroid import losses as asteroid_losses
 from torch import nn
 from torch.nn.modules.loss import _Loss
 
-from . import snr
+try:
+    from asteroid import losses as asteroid_losses
+except ImportError:
+    asteroid_losses = None
 
+from . import snr
 
 def parse_loss(name: str, kwargs: Dict[str, Any]) -> _Loss:
 
-    for module in [nn.modules.loss, snr, asteroid_losses, asteroid_losses.sdr]:
+    modules = [nn.modules.loss, snr]
+    if asteroid_losses is not None:
+        modules.extend([asteroid_losses, asteroid_losses.sdr])
+    for module in modules:
         if name in module.__dict__:
             return module.__dict__[name](**kwargs)
 
