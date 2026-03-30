@@ -21,7 +21,8 @@ def demix(
     mix: torch.Tensor,
     device: torch.device,
     model_type: str,
-    pbar: bool = False
+    pbar: bool = False,
+    callback: Optional[Any] = None
 ) -> Union[Dict[str, np.ndarray], np.ndarray]:
     """
     Perform audio source separation with a given model.
@@ -40,6 +41,8 @@ def demix(
             determines processing mode.
         pbar (bool, optional): If True, show a progress bar during chunk
             processing. Defaults to False.
+        callback (callable, optional): A function called after each batch
+            is processed. It receives the current estimated sources as a dict or array.
 
     Returns:
         Union[Dict[str, np.ndarray], np.ndarray]:
@@ -52,6 +55,7 @@ def demix(
     should_print = not dist.is_initialized() or dist.get_rank() == 0
 
     mix = torch.tensor(mix, dtype=torch.float32)
+    mix_orig_for_callback = mix.cpu().numpy()
 
     if model_type == 'htdemucs':
         mode = 'demucs'
@@ -63,6 +67,7 @@ def demix(
         num_instruments = len(config.training.instruments)
         num_overlap = config.inference.num_overlap
         step = chunk_size // num_overlap
+        instruments = config.training.instruments
     else:
         if 'chunk_size' in config.inference:
             chunk_size = config.inference.chunk_size
@@ -79,6 +84,7 @@ def demix(
         # Add padding for generic mode to handle edge artifacts
         if length_init > 2 * border and border > 0:
             mix = nn.functional.pad(mix, (border, border), mode="reflect")
+        instruments = prefer_target_instrument(config)
 
     batch_size = config.inference.batch_size
 
@@ -101,6 +107,7 @@ def demix(
             else:
                 progress_bar = None
 
+            last_callback_end = 0
             while i < mix.shape[1]:
                 # Extract chunk and apply padding if necessary
                 part = mix[:, i:i + chunk_size].to(device)
@@ -122,9 +129,9 @@ def demix(
 
                     if mode == "generic":
                         window = windowing_array.clone() # using clone() fixes the clicks at chunk edges when using batch_size=1
-                        if i - step == 0:  # First audio chunk, no fadein
+                        if i - step * len(batch_data) == 0:  # First audio chunk, no fadein
                             window[:fade_size] = 1
-                        elif i >= mix.shape[1]:  # Last audio chunk, no fadeout
+                        if i >= mix.shape[1]:  # Last audio chunk, no fadeout
                             window[-fade_size:] = 1
 
                     for j, (start, seg_len) in enumerate(batch_locations):
@@ -134,6 +141,73 @@ def demix(
                         else:
                             result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu()
                             counter[..., start:start + seg_len] += 1.0
+
+                    if callback:
+                        # Determine how much of the result is now "final" (fully counter-ed)
+                        # For generic mode with overlap, only up to start of next expected chunk
+                        # is fully processed.
+                        current_processed_end = batch_locations[-1][0] + batch_locations[-1][1]
+                        
+                        # A safe estimate for "final" data in overlapping scenario:
+                        # Data is final if it won't be touched by future chunks.
+                        # Future chunks start at i, i+step, etc.
+                        # So everything before 'i' (the start of next chunk to be added to batch)
+                        # is NOT necessarily final if i < mix.shape[1].
+                        # In generic mode, border = chunk_size - step.
+                        # The chunk starting at 'start' affects [start, start + chunk_size].
+                        # The NEXT chunk starts at start + step.
+                        # So [start, start + step] is fully processed after the chunk at 'start'
+                        # IF there are no more chunks affecting it.
+                        
+                        safe_end = i - border if mode == "generic" else i
+                        if i >= mix.shape[1]:
+                            safe_end = mix.shape[1]
+                        
+                        if safe_end > last_callback_end:
+                            final_part = result[..., last_callback_end:safe_end] / counter[..., last_callback_end:safe_end]
+                            final_part = final_part.cpu().numpy()
+                            np.nan_to_num(final_part, copy=False, nan=0.0)
+                            
+                            # Compensate for padding in generic mode for callback
+                            callback_part = final_part
+                            if mode == "generic":
+                                # last_callback_end and safe_end are in padded coordinates
+                                # actual start = last_callback_end - border
+                                # actual end = safe_end - border
+                                actual_start = max(0, last_callback_end - border)
+                                actual_end = min(length_init, safe_end - border)
+                                if actual_end > actual_start:
+                                    # slice final_part correctly
+                                    slice_start = actual_start - (last_callback_end - border)
+                                    slice_end = actual_end - (last_callback_end - border)
+                                    callback_part = final_part[..., slice_start:slice_end]
+                                else:
+                                    callback_part = None
+                            
+                            if callback_part is not None and callback_part.shape[-1] > 0:
+                                if mode == "demucs" and num_instruments <= 1:
+                                    callback_data = callback_part
+                                else:
+                                    callback_data = {k: v for k, v in zip(instruments, callback_part)}
+                                    
+                                    extract_instrumental = False
+                                    if isinstance(config, dict):
+                                        extract_instrumental = config.get('extract_instrumental', False)
+                                    else:
+                                        extract_instrumental = getattr(config, 'extract_instrumental', False)
+
+                                    if extract_instrumental:
+                                        # Use the corresponding original mix chunk to compute instrumental
+                                        mix_chunk = mix_orig_for_callback[..., actual_start:actual_end]
+                                        
+                                        # We need to find the target stem (usually vocals)
+                                        # This is a bit simplified, assuming the first instrument or 'vocals'
+                                        target_stem = 'vocals' if 'vocals' in instruments else instruments[0]
+                                        callback_data['instrumental'] = mix_chunk - callback_data[target_stem]
+                                
+                                callback(callback_data)
+                            
+                            last_callback_end = safe_end
 
                     batch_data.clear()
                     batch_locations.clear()
@@ -155,11 +229,7 @@ def demix(
                     estimated_sources = estimated_sources[..., border:-border]
 
     # Return the result as a dictionary or a single array
-    if mode == "demucs":
-        instruments = config.training.instruments
-    else:
-        instruments = prefer_target_instrument(config)
-
+    # instruments already defined above
     ret_data = {k: v for k, v in zip(instruments, estimated_sources)}
 
     if mode == "demucs" and num_instruments <= 1:

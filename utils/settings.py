@@ -213,7 +213,15 @@ def parse_args_inference(dict_args: Union[Dict, None]) -> argparse.Namespace:
                         help="do not invert vocals to get instrumental")
     parser.add_argument("--disable_detailed_pbar", action='store_true', help="disable detailed progress bar")
     parser.add_argument("--force_cpu", action='store_true', help="Force the use of CPU even if CUDA is available")
-    parser.add_argument("--flac_file", action='store_true', help="Output flac file instead of wav")
+
+    format_group = parser.add_mutually_exclusive_group()
+    format_group.add_argument("--flac", action='store_true', help="write/store outputs as FLAC instead of WAV")
+    format_group.add_argument("--mp3", action='store_true', help="write/store outputs as MP3 instead of WAV")
+
+    stream_group = parser.add_mutually_exclusive_group()
+    stream_group.add_argument("--stream-f32le-instrumental", action='store_true', help='write instrumental to stdout as f32le')
+    stream_group.add_argument("--stream-f32le-vocal", action='store_true', help='write vocal to stdout as f32le')
+
     parser.add_argument("--pcm_type", type=str, choices=['PCM_16', 'PCM_24', 'FLOAT'], default='FLOAT',
                         help="PCM type for FLAC files (PCM_16 or PCM_24)")
     parser.add_argument("--use_tta", action='store_true',

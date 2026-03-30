@@ -30,6 +30,66 @@ CONFIG_PATH = 'configs/config_musdb18_scnet_xl_more_wide_v5.yaml'
 START_CHECK_POINT = 'results/model_scnet_ep_36_sdr_10.0891.ckpt'
 
 
+def write_f32le_to_stdout(audio):
+    if audio.ndim == 1:
+        audio = audio[:, np.newaxis]
+    stream_data = np.asarray(audio, dtype='<f4', order='C').tobytes()
+    fd = sys.stdout.fileno()
+    offset = 0
+    while offset < len(stream_data):
+        written = os.write(fd, stream_data[offset:])
+        if written <= 0:
+            raise RuntimeError('Failed to write stream output to stdout')
+        offset += written
+    sys.stdout.flush()
+
+
+def write_flac_to_stdout(audio, sample_rate):
+    import tempfile
+    if audio.ndim == 1:
+        audio = audio[:, np.newaxis]
+    with tempfile.NamedTemporaryFile(suffix=".flac", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        sf.write(tmp_path, audio, sample_rate, format='FLAC', subtype='PCM_24')
+        with open(tmp_path, 'rb') as f:
+            data = f.read()
+        fd = sys.stdout.fileno()
+        offset = 0
+        while offset < len(data):
+            written = os.write(fd, data[offset:])
+            if written <= 0:
+                raise RuntimeError('Failed to write FLAC stream output to stdout')
+            offset += written
+        sys.stdout.flush()
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def write_mp3_to_stdout(audio, sample_rate):
+    import tempfile
+    if audio.ndim == 1:
+        audio = audio[:, np.newaxis]
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        sf.write(tmp_path, audio, sample_rate, bitrate_mode='CONSTANT', compression_level=0.0)
+        with open(tmp_path, 'rb') as f:
+            data = f.read()
+        fd = sys.stdout.fileno()
+        offset = 0
+        while offset < len(data):
+            written = os.write(fd, data[offset:])
+            if written <= 0:
+                raise RuntimeError('Failed to write MP3 stream output to stdout')
+            offset += written
+        sys.stdout.flush()
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 def read_audio(path, sample_rate):
     try:
         audio, sr = sf.read(path, always_2d=True)
@@ -92,18 +152,25 @@ def run_inference(
         return
 
     sample_rate: int = getattr(config.audio, "sample_rate", 44100)
+    streaming = getattr(args, "stream_f32le_instrumental", False) or getattr(args, "stream_f32le_vocal", False)
 
-    print(f"Total files found: {len(mixture_paths)}. Using sample rate: {sample_rate}")
+    if not streaming:
+        print(f"Total files found: {len(mixture_paths)}. Using sample rate: {sample_rate}")
+    else:
+        if len(mixture_paths) != 1:
+            print("Streaming modes require exactly one input track. Use --input for streaming.", file=sys.stderr)
+            return
 
     instruments: list[str] = prefer_target_instrument(config)[:]
-    os.makedirs(args.store_dir, exist_ok=True)
+    if not streaming:
+        os.makedirs(args.store_dir, exist_ok=True)
 
     # Wrap paths with progress bar if not in verbose mode
-    if not verbose:
+    if not verbose and not streaming:
         mixture_paths = tqdm(mixture_paths, desc="Total progress")
 
     # Determine whether to use detailed progress bar
-    if args.disable_detailed_pbar:
+    if args.disable_detailed_pbar or streaming:
         detailed_pbar = False
     else:
         detailed_pbar = True
@@ -118,18 +185,21 @@ def run_inference(
         try:
             mix, sr = read_audio(path, sample_rate)
         except Exception as e:
-            print(f"Cannot read track: {format(path)}")
-            print(f"Error message: {str(e)}")
+            if not streaming:
+                print(f"Cannot read track: {format(path)}")
+                print(f"Error message: {str(e)}")
             continue
 
         # Convert mono audio to expected channel format if needed
         if len(mix.shape) == 1:
             mix = np.expand_dims(mix, axis=0)
 
-        if mix.shape[0] == 1:
+        original_mono = mix.shape[0] == 1
+        if original_mono:
             if "num_channels" in config.audio:
                 if config.audio["num_channels"] == 2:
-                    print("Convert mono track to stereo...")
+                    if not streaming:
+                        print("Convert mono track to stereo...")
                     mix = np.concatenate([mix, mix], axis=0)
 
         mix_orig = mix.copy()
@@ -139,6 +209,33 @@ def run_inference(
             if config.inference["normalize"] is True:
                 mix, norm_params = normalize_audio(mix)
 
+        # Set extract_instrumental in config so demix callback can see it
+        if isinstance(config, dict):
+            config['extract_instrumental'] = args.extract_instrumental
+        else:
+            config.extract_instrumental = args.extract_instrumental
+
+        stream_callback = None
+        if streaming:
+            def stream_callback(waveforms_chunk):
+                if getattr(args, "stream_f32le_vocal", False):
+                    instr_key = "vocals" if "vocals" in instruments else instruments[0]
+                    chunk = waveforms_chunk[instr_key]
+                else:
+                    chunk = waveforms_chunk["instrumental"]
+
+                if original_mono:
+                    chunk = chunk[0]
+                else:
+                    chunk = chunk.T
+
+                if getattr(args, "flac", False):
+                    write_flac_to_stdout(chunk, sr)
+                elif getattr(args, "mp3", False):
+                    write_mp3_to_stdout(chunk, sr)
+                else:
+                    write_f32le_to_stdout(chunk)
+
         # Perform source separation
         waveforms_orig = demix(
             config,
@@ -146,8 +243,12 @@ def run_inference(
             mix,
             device,
             model_type=args.model_type,
-            pbar=detailed_pbar
+            pbar=detailed_pbar,
+            callback=stream_callback
         )
+
+        if streaming:
+            continue
 
         # Apply test-time augmentation if enabled
         if args.use_tta:
@@ -175,11 +276,16 @@ def run_inference(
                 if config.inference["normalize"] is True:
                     estimates = denormalize_audio(estimates, norm_params)
 
-            peak: float = float(np.abs(estimates).max())
-            if peak <= 1.0 and args.pcm_type != 'FLOAT':
+            if getattr(args, "flac", False):
                 codec = "flac"
+            elif getattr(args, "mp3", False):
+                codec = "mp3"
             else:
-                codec = "wav"
+                peak: float = float(np.abs(estimates).max())
+                if peak <= 1.0 and args.pcm_type != 'FLOAT':
+                    codec = "flac"
+                else:
+                    codec = "wav"
 
             subtype = args.pcm_type
 
@@ -201,7 +307,12 @@ def run_inference(
             os.makedirs(output_dir, exist_ok=True)
 
             output_path: str = os.path.join(output_dir, f"{fname}.{codec}")
-            sf.write(output_path, estimates.T, sr, subtype=subtype)
+            if codec == 'mp3':
+                sf.write(output_path, estimates.T, sr, bitrate_mode='CONSTANT', compression_level=0.0)
+            elif codec == 'flac':
+                sf.write(output_path, estimates.T, sr, format='FLAC', subtype='PCM_24')
+            else:
+                sf.write(output_path, estimates.T, sr, subtype=subtype)
 
             # Draw and save spectrogram if enabled
             if args.draw_spectro > 0:
@@ -209,7 +320,8 @@ def run_inference(
                 draw_spectrogram(estimates.T, sr, args.draw_spectro, output_img_path)
                 print("Wrote file:", output_img_path)
 
-    print(f"Elapsed time: {time.time() - start_time:.2f} seconds.")
+    if not streaming:
+        print(f"Elapsed time: {time.time() - start_time:.2f} seconds.")
 
 def format_filename(template, **kwargs):
     '''
