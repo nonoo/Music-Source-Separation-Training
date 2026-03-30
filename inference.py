@@ -30,7 +30,20 @@ CONFIG_PATH = 'configs/config_musdb18_scnet_xl_more_wide_v5.yaml'
 START_CHECK_POINT = 'results/model_scnet_ep_36_sdr_10.0891.ckpt'
 
 
-def run_folder(
+def read_audio(path, sample_rate):
+    try:
+        audio, sr = sf.read(path, always_2d=True)
+        if sr != sample_rate:
+            audio = librosa.resample(audio.T, orig_sr=sr, target_sr=sample_rate).T
+        return audio.T, sample_rate
+    except Exception:
+        audio, sr = librosa.load(path, sr=sample_rate, mono=False)
+        if len(audio.shape) == 1:
+            audio = np.expand_dims(audio, axis=0)
+        return audio, sample_rate
+
+
+def run_inference(
     model: "torch.nn.Module",
     args: "argparse.Namespace",
     config: dict,
@@ -38,14 +51,14 @@ def run_folder(
     verbose: bool = False
 ) -> None:
     """
-    Process a folder of audio files for source separation.
+    Process audio files for source separation.
 
     Parameters:
     ----------
     model : torch.nn.Module
         Pre-trained model for source separation.
     args : argparse.Namespace
-        Arguments containing input folder, output folder, and processing options.
+        Arguments containing input, input folder, output folder, and processing options.
     config : dict
         Configuration object with audio and inference settings.
     device : torch.device
@@ -57,11 +70,26 @@ def run_folder(
     start_time = time.time()
     model.eval()
 
-    # Recursively collect all files from input directory
-    mixture_paths = sorted(
-        glob.glob(os.path.join(args.input_folder, "**/*.*"), recursive=True)
-    )
-    mixture_paths = [p for p in mixture_paths if os.path.isfile(p)]
+    if args.input:
+        if os.path.isdir(args.input):
+            mixture_paths = sorted(
+                glob.glob(os.path.join(args.input, "**/*.*"), recursive=True)
+            )
+            mixture_paths = [p for p in mixture_paths if os.path.isfile(p)]
+            input_root = args.input
+        else:
+            mixture_paths = [args.input]
+            input_root = os.path.dirname(args.input)
+    elif args.input_folder:
+        # Recursively collect all files from input directory
+        mixture_paths = sorted(
+            glob.glob(os.path.join(args.input_folder, "**/*.*"), recursive=True)
+        )
+        mixture_paths = [p for p in mixture_paths if os.path.isfile(p)]
+        input_root = args.input_folder
+    else:
+        print("No input provided. Please use --input or --input_folder.")
+        return
 
     sample_rate: int = getattr(config.audio, "sample_rate", 44100)
 
@@ -82,13 +110,13 @@ def run_folder(
 
     for path in mixture_paths:
         # Get relative path from input folder
-        relative_path: str = os.path.relpath(path, args.input_folder)
+        relative_path: str = os.path.relpath(path, input_root)
         # Extract directory and file name
         dir_name: str = os.path.dirname(relative_path)
         file_name: str = os.path.splitext(os.path.basename(path))[0]
 
         try:
-            mix, sr = librosa.load(path, sr=sample_rate, mono=False)
+            mix, sr = read_audio(path, sample_rate)
         except Exception as e:
             print(f"Cannot read track: {format(path)}")
             print(f"Error message: {str(e)}")
@@ -97,6 +125,8 @@ def run_folder(
         # Convert mono audio to expected channel format if needed
         if len(mix.shape) == 1:
             mix = np.expand_dims(mix, axis=0)
+
+        if mix.shape[0] == 1:
             if "num_channels" in config.audio:
                 if config.audio["num_channels"] == 2:
                     print("Convert mono track to stereo...")
@@ -242,7 +272,7 @@ def proc_folder(dict_args):
 
     print("Model load time: {:.2f} sec".format(time.time() - model_load_start_time))
 
-    run_folder(model, args, config, device, verbose=True)
+    run_inference(model, args, config, device, verbose=True)
 
 
 if __name__ == "__main__":

@@ -202,14 +202,15 @@ def parse_args_inference(dict_args: Union[Dict, None]) -> argparse.Namespace:
                              " scnet, scnet_unofficial, segm_models, swin_upernet, torchseg")
     parser.add_argument("--config_path", type=str, help="path to config file")
     parser.add_argument("--start_check_point", type=str, default='', help="Initial checkpoint to valid weights")
+    parser.add_argument("--input", type=str, help="single audio file to process")
     parser.add_argument("--input_folder", type=str, help="folder with mixtures to process")
     parser.add_argument("--store_dir", type=str, default="", help="path to store results as wav file")
     parser.add_argument("--draw_spectro", type=float, default=0,
                         help="Code will generate spectrograms for resulted stems."
                              " Value defines for how many seconds os track spectrogram will be generated.")
     parser.add_argument("--device_ids", nargs='+', type=int, default=0, help='list of gpu ids')
-    parser.add_argument("--extract_instrumental", action='store_true',
-                        help="invert vocals to get instrumental if provided")
+    parser.add_argument("--no_extract_instrumental", action='store_false', dest='extract_instrumental',
+                        help="do not invert vocals to get instrumental")
     parser.add_argument("--disable_detailed_pbar", action='store_true', help="disable detailed progress bar")
     parser.add_argument("--force_cpu", action='store_true', help="Force the use of CPU even if CUDA is available")
     parser.add_argument("--flac_file", action='store_true', help="Output flac file instead of wav")
