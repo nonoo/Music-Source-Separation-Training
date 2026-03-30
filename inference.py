@@ -30,14 +30,11 @@ def write_f32le_to_stdout(audio):
     if audio.ndim == 1:
         audio = audio[:, np.newaxis]
     stream_data = np.asarray(audio, dtype='<f4', order='C').tobytes()
-    fd = sys.stdout.fileno()
-    offset = 0
-    while offset < len(stream_data):
-        written = os.write(fd, stream_data[offset:])
-        if written <= 0:
-            raise RuntimeError('Failed to write stream output to stdout')
-        offset += written
-    sys.stdout.flush()
+    try:
+        sys.__stdout__.buffer.write(stream_data)
+        sys.__stdout__.buffer.flush()
+    except Exception as e:
+        print(f"Error writing to stdout: {e}", file=sys.stderr)
 
 
 def write_flac_to_stdout(audio, sample_rate):
@@ -50,14 +47,10 @@ def write_flac_to_stdout(audio, sample_rate):
         sf.write(tmp_path, audio, sample_rate, format='FLAC', subtype='PCM_24')
         with open(tmp_path, 'rb') as f:
             data = f.read()
-        fd = sys.stdout.fileno()
-        offset = 0
-        while offset < len(data):
-            written = os.write(fd, data[offset:])
-            if written <= 0:
-                raise RuntimeError('Failed to write FLAC stream output to stdout')
-            offset += written
-        sys.stdout.flush()
+        sys.__stdout__.buffer.write(data)
+        sys.__stdout__.buffer.flush()
+    except Exception as e:
+        print(f"Error writing FLAC to stdout: {e}", file=sys.stderr)
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -73,14 +66,10 @@ def write_mp3_to_stdout(audio, sample_rate):
         sf.write(tmp_path, audio, sample_rate, bitrate_mode='CONSTANT', compression_level=0.0)
         with open(tmp_path, 'rb') as f:
             data = f.read()
-        fd = sys.stdout.fileno()
-        offset = 0
-        while offset < len(data):
-            written = os.write(fd, data[offset:])
-            if written <= 0:
-                raise RuntimeError('Failed to write MP3 stream output to stdout')
-            offset += written
-        sys.stdout.flush()
+        sys.__stdout__.buffer.write(data)
+        sys.__stdout__.buffer.flush()
+    except Exception as e:
+        print(f"Error writing MP3 to stdout: {e}", file=sys.stderr)
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -144,11 +133,13 @@ def run_inference(
         mixture_paths = [p for p in mixture_paths if os.path.isfile(p)]
         input_root = args.input_folder
     else:
-        print("No input provided. Please use --input or --input_folder.")
+        print("No input provided. Please use --input or --input_folder.", file=sys.stderr)
         return
 
     sample_rate: int = getattr(config.audio, "sample_rate", 44100)
     streaming = getattr(args, "stream_f32le_instrumental", False) or getattr(args, "stream_f32le_vocal", False)
+    if getattr(args, "stream_f32le_instrumental", False):
+        args.extract_instrumental = True
 
     if not streaming:
         print(f"Total files found: {len(mixture_paths)}. Using sample rate: {sample_rate}")
@@ -181,9 +172,8 @@ def run_inference(
         try:
             mix, sr = read_audio(path, sample_rate)
         except Exception as e:
-            if not streaming:
-                print(f"Cannot read track: {format(path)}")
-                print(f"Error message: {str(e)}")
+            print(f"Cannot read track: {path}", file=sys.stderr)
+            print(f"Error message: {str(e)}", file=sys.stderr)
             continue
 
         # Convert mono audio to expected channel format if needed
@@ -333,16 +323,21 @@ def format_filename(template, **kwargs):
 
 def proc_folder(dict_args):
     args = parse_args_inference(dict_args)
+    streaming = getattr(args, "stream_f32le_instrumental", False) or getattr(args, "stream_f32le_vocal", False)
+    if streaming:
+        sys.stdout = sys.stderr
+        print(f"DEBUG: Streaming mode enabled. sys.stdout fileno: {sys.stdout.fileno()} sys.__stdout__ fileno: {sys.__stdout__.fileno()}", file=sys.stderr)
+
     device = "cpu"
     if args.force_cpu:
         device = "cpu"
     elif torch.cuda.is_available():
-        print('CUDA is available, use --force_cpu to disable it.')
+        print('CUDA is available, use --force_cpu to disable it.', file=sys.stderr)
         device = f'cuda:{args.device_ids[0]}' if isinstance(args.device_ids, list) else f'cuda:{args.device_ids}'
     elif torch.backends.mps.is_available():
         device = "mps"
 
-    print("Using device: ", device)
+    print("Using device: ", device, file=sys.stderr)
 
     model_load_start_time = time.time()
     torch.backends.cudnn.benchmark = True
@@ -354,7 +349,7 @@ def proc_folder(dict_args):
         checkpoint = torch.load(args.start_check_point, weights_only=False, map_location='cpu')
         load_start_checkpoint(args, model, checkpoint, type_='inference')
 
-    print("Instruments: {}".format(config.training.instruments))
+    print("Instruments: {}".format(config.training.instruments), file=sys.stderr)
 
     # in case multiple CUDA GPUs are used and --device_ids arg is passed
     if isinstance(args.device_ids, list) and len(args.device_ids) > 1 and not args.force_cpu:
@@ -362,7 +357,7 @@ def proc_folder(dict_args):
 
     model = model.to(device)
 
-    print("Model load time: {:.2f} sec".format(time.time() - model_load_start_time))
+    print("Model load time: {:.2f} sec".format(time.time() - model_load_start_time), file=sys.stderr)
 
     run_inference(model, args, config, device, verbose=True)
 
