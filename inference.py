@@ -25,10 +25,6 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-MODEL_TYPE = 'scnet'
-CONFIG_PATH = 'configs/config_musdb18_scnet_xl_more_wide_v5.yaml'
-START_CHECK_POINT = 'results/model_scnet_ep_36_sdr_10.0891.ckpt'
-
 
 def write_f32le_to_stdout(audio):
     if audio.ndim == 1:
@@ -337,22 +333,6 @@ def format_filename(template, **kwargs):
 
 def proc_folder(dict_args):
     args = parse_args_inference(dict_args)
-
-    if dict_args is None:
-        if not any(arg.startswith('--model_type') for arg in sys.argv):
-            args.model_type = MODEL_TYPE
-        if not any(arg.startswith('--config_path') for arg in sys.argv):
-            args.config_path = CONFIG_PATH
-        if not any(arg.startswith('--start_check_point') for arg in sys.argv):
-            args.start_check_point = START_CHECK_POINT
-    else:
-        if 'model_type' not in dict_args:
-            args.model_type = MODEL_TYPE
-        if 'config_path' not in dict_args:
-            args.config_path = CONFIG_PATH
-        if 'start_check_point' not in dict_args:
-            args.start_check_point = START_CHECK_POINT
-
     device = "cpu"
     if args.force_cpu:
         device = "cpu"
@@ -388,6 +368,4 @@ def proc_folder(dict_args):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        sys.argv.append("-h")
     proc_folder(None)
