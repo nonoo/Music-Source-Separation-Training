@@ -9,6 +9,6 @@ scriptdir=${self%$scriptname}
 cd $scriptdir
 
 .venv/bin/python inference.py \
-	--model_type scnet \
-	--config_path configs/config_musdb18_scnet_xl_more_wide_v5.yaml \
-	--start_check_point results/model_scnet_ep_36_sdr_10.0891.ckpt "$@"
+	--model_type sub_roformer \
+	--config_path configs/subroformer_base_4stem.yaml \
+	--start_check_point results/sub_roformer_base_4stem.ckpt "$@"
